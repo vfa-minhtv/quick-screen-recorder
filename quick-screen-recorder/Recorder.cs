@@ -9,6 +9,15 @@ using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using sharpCV = SharpCV;
+using System.Reflection;
+using System.Drawing;
+using Tensorflow;
+using System.IO;
+using NumSharp;
+using Console = Colorful.Console;
+using static Tensorflow.Binding;
+using static SharpCV.Binding;
 
 namespace quick_screen_recorder
 {
@@ -59,6 +68,17 @@ namespace quick_screen_recorder
         public const Int32 CURSOR_SHOWING = 0x00000001;
 
         public bool Mute = false;
+
+        string modelDir = "Models";
+        string imageDir = "Inputs";
+        string pbDetectorFile = "optimized_frozen_graph.pb";
+        string pbEmotionFile = "emotion_frozen_graph.pb";
+
+        int inputSizeDetector = 640;
+        int inputSizeEmotion = 60;
+
+        Graph detectorGraph;
+        Graph emotionGraph;
 
         public Recorder(string filePath, 
             int quality, int x, int y, int width, int height, bool captureCursor,
@@ -145,6 +165,23 @@ namespace quick_screen_recorder
             }
 
             screenThread.Start();
+
+            Console.WriteLine(Environment.OSVersion, Color.Yellow);
+            Console.WriteLine($"64Bit Operating System: {Environment.Is64BitOperatingSystem}", Color.Yellow);
+            Console.WriteLine($"TensorFlow.NET v{Assembly.GetAssembly(typeof(TF_DataType)).GetName().Version}", Color.Yellow);
+            Console.WriteLine($"TensorFlow Binary v{tf.VERSION}", Color.Yellow);
+            Console.WriteLine($".NET CLR: {Environment.Version}", Color.Yellow);
+            Console.WriteLine(Environment.CurrentDirectory, Color.Yellow);
+
+            tf.compat.v1.disable_eager_execution();
+
+            detectorGraph = new Graph().as_default();
+            detectorGraph.Import(Path.Combine(modelDir, pbDetectorFile));
+
+            emotionGraph = new Graph().as_default();
+            emotionGraph.Import(Path.Combine(modelDir, pbEmotionFile));
+
+
         }
 
         public void Dispose()
@@ -172,7 +209,7 @@ namespace quick_screen_recorder
         private void RecordScreen()
         {
             var stopwatch = new Stopwatch();
-            var buffer = new byte[width * height * 4];
+            var buffer = new byte[width * height * 3];
 
             Task videoWriteTask = null;
 
@@ -185,6 +222,9 @@ namespace quick_screen_recorder
             {
                 Screenshot(buffer);
                 shotsTaken++;
+
+
+                var input = ReadTensorFromImageFile(buffer);
 
                 if (!isFirstFrame)
                 {
@@ -219,7 +259,31 @@ namespace quick_screen_recorder
             }
         }
 
-        private void Screenshot(byte[] Buffer)
+        private NDArray ReadTensorFromImageFile(byte[] buffer)
+        {
+            int img_h = 60;// MNIST images are 64x64
+            int img_w = 60;// MNIST images are 64x64
+
+            //tf.enable_eager_execution();
+            var graph = tf.Graph().as_default();
+
+            //var file_reader = tf.io.read_file(file_name, "file_reader");
+            //var nd = new NDArray(buffer);
+            var t3 = tf.constant(buffer, dtype: TF_DataType.TF_UINT8);
+            var inp = tf.reshape(t3, (1920, 1080, 3));
+            var casted = tf.cast(inp, TF_DataType.TF_UINT8);
+            //var decodeJpeg = tf.image.decode_image(t3, channels: 3, name: "DecodeBmp");
+            //var casted1 = tf.cast(decodeJpeg, TF_DataType.TF_UINT8);
+            var dims_expander = tf.expand_dims(casted, 0);
+            var resize = tf.constant(new int[] { img_h, img_w });
+            var bilinear = tf.image.resize_bilinear(dims_expander, resize);
+            //tf.compat.v1.disable_eager_execution();
+            using (var sess = tf.Session(graph))
+                return sess.run(bilinear);
+            
+        }
+
+        private void Screenshot(byte[] SreenBuffer)
         {
             using (var BMP = new Bitmap(width, height))
             {
@@ -244,12 +308,40 @@ namespace quick_screen_recorder
 
                     g.Flush();
 
+                    //var nd = BMP.ToNDArray(flat: false, copy: false, discardAlpha: true);
+
                     var bits = BMP.LockBits(
                         new Rectangle(0, 0, width, height),
                         ImageLockMode.ReadOnly,
-                        PixelFormat.Format32bppRgb
+                        PixelFormat.Format24bppRgb
                     );
-                    Marshal.Copy(bits.Scan0, Buffer, 0, Buffer.Length);
+                    Marshal.Copy(bits.Scan0, SreenBuffer, 0, SreenBuffer.Length);
+
+                    //var nd = new NDArray(NPTypeCode.Byte, Shape.Vector(bits.Stride * BMP.Height), fillZeros: false);
+                    //unsafe
+                    //{ 
+                    //    // Get the respective addresses
+                    //    byte* src = (byte*)bits.Scan0;
+                    //    byte* dst = (byte*)nd.Unsafe.Address; //we can use unsafe because we just allocated that array and we know for sure it is contagious.
+                    //
+                    //    // Copy the RGB values into the array.
+                    //    System.Buffer.MemoryCopy(src, dst, nd.size, nd.size); //faster than Marshal.Copy                    
+                    //}
+
+                    //var nd1 = nd.reshape(height, width, 3).flat;
+                    //var nd2 = nd1.reshape(height, width);
+
+                    //Console.WriteLine($"nd shape {nd.Shape}");
+                    //Console.WriteLine($"nd shape {nd1.Shape}");
+
+                    //cv2.imshow("Detected Objects in TensorFlow.NET", nd1);
+                    //cv2.waitKey();
+                    //var mat = new sharpCV.Mat(nd);
+                    //var src = sharpCV.Mat(2, 2, CV_8UC3, data);
+                    //cv2.imshow("Detected Objects in TensorFlow.NET", mat);
+                    //cv2.waitKey();
+
+                    //var nd = BMP.ToNDArray(flat: false, copy: true, discardAlpha: true);
                     BMP.UnlockBits(bits);
                 }
             }
