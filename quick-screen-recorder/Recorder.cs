@@ -18,6 +18,10 @@ using NumSharp;
 using Console = Colorful.Console;
 using static Tensorflow.Binding;
 using static SharpCV.Binding;
+using System.Linq;
+using CsvHelper;
+using System.Globalization;
+using System.Collections.Generic;
 
 namespace quick_screen_recorder
 {
@@ -79,7 +83,14 @@ namespace quick_screen_recorder
 
         Graph detectorGraph;
         Graph emotionGraph;
+        Graph imgGraph;
 
+        Session imgSess;
+        Session detectorSession;
+
+        StreamWriter writerCSV;
+        CsvWriter csv;
+ 
         public Recorder(string filePath, 
             int quality, int x, int y, int width, int height, bool captureCursor,
             int inputSourceIndex, bool separateAudio)
@@ -164,7 +175,13 @@ namespace quick_screen_recorder
                 audioSource.StartRecording();
             }
 
-            screenThread.Start();
+            tf.compat.v1.disable_eager_execution();
+
+            detectorGraph = tf.Graph().as_default();
+            detectorGraph.Import(Path.Combine(modelDir, pbDetectorFile));
+
+            emotionGraph = tf.Graph().as_default();
+            emotionGraph.Import(Path.Combine(modelDir, pbEmotionFile));
 
             Console.WriteLine(Environment.OSVersion, Color.Yellow);
             Console.WriteLine($"64Bit Operating System: {Environment.Is64BitOperatingSystem}", Color.Yellow);
@@ -173,15 +190,16 @@ namespace quick_screen_recorder
             Console.WriteLine($".NET CLR: {Environment.Version}", Color.Yellow);
             Console.WriteLine(Environment.CurrentDirectory, Color.Yellow);
 
-            tf.compat.v1.disable_eager_execution();
+            //writerCSV = new StreamWriter("output.csv");
+            //csv = new CsvWriter(writerCSV, CultureInfo.InvariantCulture);
+            using (var writer = new StreamWriter("output.csv"))
+            using (var csv = new CsvWriter(writer, CultureInfo.InvariantCulture))
+            {
+                csv.WriteHeader<CSVRecord>();
+                csv.NextRecord();
+            }
 
-            detectorGraph = new Graph().as_default();
-            detectorGraph.Import(Path.Combine(modelDir, pbDetectorFile));
-
-            emotionGraph = new Graph().as_default();
-            emotionGraph.Import(Path.Combine(modelDir, pbEmotionFile));
-
-
+            screenThread.Start();
         }
 
         public void Dispose()
@@ -222,31 +240,47 @@ namespace quick_screen_recorder
             {
                 Screenshot(buffer);
                 shotsTaken++;
+                NDArray img_buffer = new NDArray(buffer);
+                img_buffer = img_buffer.reshape((height, width, 3));
+                Console.WriteLine($"Image img_buffer: {img_buffer.size}");
 
+                //int x1 = 381;
+                //int y1 = 105;
+                //int x2 = 644;
+                //int y2 = 408;
 
-                var input = ReadTensorFromImageFile(buffer);
+                //var crop_img = img_buffer[new Slice(y1, y2 + 1), new Slice(x1, x2 + 1), Slice.All];
+                //NDArray img_buffer_1 = new NDArray(crop_img.ToArray<byte>());
+                //img_buffer_1 = img_buffer_1.reshape((y2 - y1 + 1, x2 - x1 + 1, 3));
+
+                var img_detector = InferenceDetector(img_buffer);
+                if (!(img_detector == null))
+                {
+                    Console.WriteLine($"Image detector: {img_detector.size}");
+                    InferenceEmotion(shotsTaken, img_detector);
+                }
 
                 if (!isFirstFrame)
                 {
-                    videoWriteTask.Wait();
+                    //videoWriteTask.Wait();
 
-                    videoFrameWritten.Set();
+                    //videoFrameWritten.Set();
                 }
 
                 if (audioStream != null)
                 {
-                    var signalled = WaitHandle.WaitAny(new WaitHandle[] { audioBlockWritten, stopThread });
-                    if (signalled == 1)
-                        break;
+                    //var signalled = WaitHandle.WaitAny(new WaitHandle[] { audioBlockWritten, stopThread });
+                    //if (signalled == 1)
+                    //    break;
                 }
 
-                videoWriteTask = videoStream.WriteFrameAsync(true, buffer, 0, buffer.Length);
+                //videoWriteTask = videoStream.WriteFrameAsync(true, buffer, 0, buffer.Length);
 
-                timeTillNextFrame = TimeSpan.FromSeconds(shotsTaken / (double)writer.FramesPerSecond - stopwatch.Elapsed.TotalSeconds);
-                if (timeTillNextFrame < TimeSpan.Zero)
-                {
-                    timeTillNextFrame = TimeSpan.Zero;
-                }
+                //timeTillNextFrame = TimeSpan.FromSeconds(shotsTaken / (double)writer.FramesPerSecond - stopwatch.Elapsed.TotalSeconds);
+                //if (timeTillNextFrame < TimeSpan.Zero)
+                //{
+                //    timeTillNextFrame = TimeSpan.Zero;
+                //}
 
                 isFirstFrame = false;
             }
@@ -255,32 +289,194 @@ namespace quick_screen_recorder
 
             if (!isFirstFrame)
             {
-                videoWriteTask.Wait();
+                //videoWriteTask.Wait();
             }
         }
 
-        private NDArray ReadTensorFromImageFile(byte[] buffer)
+        private Graph LoadModel(string pbFile)
         {
-            int img_h = 60;// MNIST images are 64x64
-            int img_w = 60;// MNIST images are 64x64
+            var graph = new Graph().as_default();
+            graph.Import(Path.Combine(modelDir, pbFile));
 
-            //tf.enable_eager_execution();
+            return graph; 
+        }
+
+        private NDArray InferenceDetector(NDArray img_buffer_)
+        {
+            var imgArr = ReadTensorFromImageFile(img_buffer_);
+            using (var sess = tf.Session(detectorGraph))
+            {
+                Tensor tensorClasses = detectorGraph.OperationByName("Identity");
+                Tensor imgTensor = detectorGraph.OperationByName("x");
+                Tensor[] outTensorArr = new Tensor[] { tensorClasses };
+
+                var results = sess.run(outTensorArr, new FeedItem(imgTensor, imgArr));
+
+                //Console.WriteLine($"Results: {results[0].ToString()}");
+                return PreProcessEmotion(img_buffer_, results[0]);
+            }
+        }
+
+        private NDArray PreProcessEmotion(NDArray img_buffer_, NDArray bboxes)
+        {
+            var results = bboxes.GetNDArrays();
+            if (results.Length > 0)
+            {
+                var bbox = results[0];
+                var coor = bbox[new Slice(stop: 4)].astype(NPTypeCode.Float);
+                var (x1, y1) = ((int)(coor[0].GetValue<float>() * width), (int)(coor[1].GetValue<float>() * height));
+                var (x2, y2) = ((int)(coor[2].GetValue<float>() * width), (int)(coor[3].GetValue<float>() * height));
+                Console.WriteLine($"x1, y1 : {(int)x1}, {(int)y1}");
+                Console.WriteLine($"x2, y2 : {(int)x2}, {(int)y2}");
+
+                var crop_img = img_buffer_[new Slice(y1, y2 + 1), new Slice(x1, x2 + 1), Slice.All];
+                NDArray img_buffer_1 = new NDArray(crop_img.ToArray<byte>());
+                img_buffer_1 = img_buffer_1.reshape((y2 - y1 + 1, x2 - x1 + 1, 3));
+                return img_buffer_1;
+                //InferenceEmotion(crop_img);
+                //crop_img = crop_img[Slice.All, Slice.Ellipsis ::- 1, Slice.All]
+            }
+            return null;
+        }
+
+        private void InferenceEmotion(int shotsTaken, NDArray img_buffer_)
+        {
+            var imgArr = ReadTensorFromDetected(img_buffer_, img_size: 60);
+            using (var sess = tf.Session(emotionGraph))
+            {
+                Tensor tensorClasses = emotionGraph.OperationByName("Identity");
+                Tensor imgTensor = emotionGraph.OperationByName("x");
+                Tensor[] outTensorArr = new Tensor[] { tensorClasses };
+
+                var results = sess.run(outTensorArr, new FeedItem(imgTensor, imgArr));
+
+                var emotions = results[0].ToArray<float>();
+                //var records = new List<object>
+                //{
+                //    new { Frame = shotsTaken, Results = results[0] },
+                //};
+                //csv.WriteRecord(new { Frame = shotsTaken, Results = results[0] });
+                //csv.Flush();
+                var record = new CSVRecord();
+                record.Neutral = (int)(emotions[0] * 100);
+                record.Happy = (int)(emotions[1] * 100);
+                record.Sad = (int)(emotions[2] * 100);
+                record.Angry = (int)(emotions[3] * 100);
+                record.Surprised = (int)(emotions[4] * 100);
+                record.Date = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+
+                using (var stream = File.Open("output.csv", FileMode.Append))
+                using (var writer = new StreamWriter(stream))
+                using (var csv = new CsvWriter(writer, CultureInfo.InvariantCulture))
+                {
+                    // Don't write the header again.
+                    csv.Configuration.HasHeaderRecord = false;
+                    csv.WriteRecord<CSVRecord>(record);
+                    csv.NextRecord();
+                }
+
+                Console.WriteLine($"Results: {results[0].ToString()}");
+                //PreProcessEmotion(img_buffer, results[0]);
+            }
+        }
+
+        private void buildOutputImage(NDArray img_buffer_, NDArray bboxes)
+        {
+            // var rnd = new Random();
+            //var classes = File.ReadAllLines(@"D:\SciSharp\SciSharp-Stack-Examples\data\classes\coco.names");
+            //var classes = ["person"];
+            //var num_classes = len(classes);
+            //var (image_h, image_w) = (image.shape[0], image.shape[1]);
+            // var hsv_tuples = range(num_classes).Select(x => (rnd.Next(255), rnd.Next(255), rnd.Next(255))).ToArray
+            var results = bboxes;
+            var imageDir = "Outputs";
+
+            foreach (var (i, bbox) in enumerate(results.GetNDArrays()))
+            {
+                var coor = bbox[new Slice(stop: 4)].astype(NPTypeCode.Float);
+                var (x1, y1) = ((int)(coor[0].GetValue<float>() * width), (int)(coor[1].GetValue<float>() * height));
+                var (x2, y2) = ((int)(coor[2].GetValue<float>() * width), (int)(coor[3].GetValue<float>() * height));
+                Console.WriteLine($"x1, y1 : {(int)x1}, {(int)y1}");
+                Console.WriteLine($"x2, y2 : {(int)x2}, {(int)y2}");
+
+                var fontScale = 0.5;
+                float score = bbox[15];
+                var class_ind = (float)bbox[5];
+                var bbox_color = (0, 255, 0);// hsv_tuples[rnd.Next(num_classes)];
+                var bbox_thick = (int)(0.6 * (width + height) / 600);
+
+                //var cropped_image = image[(y1, y2), (x1, x2)];
+                //cv2.imwrite(Path.Combine(imageDir, "Output_" + i + ".jpg"), cropped_image);
+                //cv2.imshow("Detected Objects in TensorFlow.NET", cropped_image);
+                //cv2.waitKey();
+
+                //cv2.rectangle(image, ((int)x1, (int)y1), ((int)x2, (int)y2), bbox_color, 2);
+
+                // show label;
+                //var bbox_mess = "aa";//$"{classes[(int)class_ind]}: {score.ToString("P")}";
+                //var t_size = cv2.getTextSize(bbox_mess, HersheyFonts.HERSHEY_SIMPLEX, fontScale, thickness: bbox_thick / 2);
+                //cv2.rectangle(image, (coor[0], coor[1]), (coor[0] + t_size.Width, coor[1] - t_size.Height - 3), bbox_color, -1);
+                //cv2.putText(image, bbox_mess, (coor[0], coor[1] - 2), HersheyFonts.HERSHEY_SIMPLEX,
+                //        fontScale, (0, 0, 0), bbox_thick / 2, lineType: LineTypes.LINE_AA);
+                //break;
+
+                //var cropped_image = image[(y1, y2), (x1, x2)];
+
+
+
+
+                //cv2.imcrop
+
+            }
+            //cv2.rectangle(image, (369, 382), (402, 414), (0, 255, 0), 2);
+
+            //return image;
+        }
+
+        private void InferenceEmotion(Graph graph, NDArray imgArr)
+        {
+            using (var sess = tf.Session(graph))
+            {
+                Tensor tensorClasses = graph.OperationByName("Identity");
+                Tensor imgTensor = graph.OperationByName("x");
+                Tensor[] outTensorArr = new Tensor[] { tensorClasses };
+
+                var results = sess.run(outTensorArr, new FeedItem(imgTensor, imgArr));
+
+                Console.WriteLine($"Results: {results[0].ToString()}");
+                //buildOutputImage(original_image, results);
+            }
+        }
+
+        private NDArray ReadTensorFromImageFile(NDArray img_buffer_, int img_size = 640)
+        {
             var graph = tf.Graph().as_default();
 
-            //var file_reader = tf.io.read_file(file_name, "file_reader");
-            //var nd = new NDArray(buffer);
-            var t3 = tf.constant(buffer, dtype: TF_DataType.TF_UINT8);
-            var inp = tf.reshape(t3, (1920, 1080, 3));
-            var casted = tf.cast(inp, TF_DataType.TF_UINT8);
-            //var decodeJpeg = tf.image.decode_image(t3, channels: 3, name: "DecodeBmp");
-            //var casted1 = tf.cast(decodeJpeg, TF_DataType.TF_UINT8);
+            
+
+            var t3 = tf.constant(img_buffer_, dtype: TF_DataType.TF_UINT8);
+            //var inp = tf.reshape(t3, (height, width, 3));
+            var casted = tf.cast(t3, tf.float32);
             var dims_expander = tf.expand_dims(casted, 0);
-            var resize = tf.constant(new int[] { img_h, img_w });
+            var resize = tf.constant(new int[] { img_size, img_size });
             var bilinear = tf.image.resize_bilinear(dims_expander, resize);
-            //tf.compat.v1.disable_eager_execution();
+            using (var sess = tf.Session(graph))
+                return sess.run(bilinear);   
+        }
+
+        private NDArray ReadTensorFromDetected(NDArray img_buffer_, int img_size = 60)
+        {
+            var graph = tf.Graph().as_default();
+            
+
+            var t3 = tf.constant(img_buffer_, dtype: TF_DataType.TF_UINT8);
+            //var inp = tf.reshape(t3, (height, width, 3));
+            var casted = tf.cast(t3, tf.float32);
+            var dims_expander = tf.expand_dims(casted, 0);
+            var resize = tf.constant(new int[] { img_size, img_size });
+            var bilinear = tf.image.resize_bilinear(dims_expander, resize);
             using (var sess = tf.Session(graph))
                 return sess.run(bilinear);
-            
         }
 
         private void Screenshot(byte[] SreenBuffer)

@@ -109,6 +109,7 @@
     <Compile Include="AreaForm.Designer.cs">
       <DependentUpon>AreaForm.cs</DependentUpon>
     </Compile>
+    <Compile Include="CSVRecord.cs" />
     <Compile Include="HotkeyManager.cs" />
     <Compile Include="Recorder.cs" />
     <Compile Include="MainForm.cs">
@@ -209,6 +210,9 @@
   <ItemGroup>
     <PackageReference Include="Colorful.Console">
       <Version>1.2.11</Version>
+    </PackageReference>
+    <PackageReference Include="CsvHelper">
+      <Version>15.0.9</Version>
     </PackageReference>
     <PackageReference Include="Google.Protobuf">
       <Version>3.11.4</Version>
