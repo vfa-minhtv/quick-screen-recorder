@@ -85,6 +85,8 @@ namespace quick_screen_recorder
         Graph emotionGraph;
         Graph imgGraph;
 
+        Session tfSession;
+
         Session imgSess;
         Session detectorSession;
 
@@ -177,7 +179,10 @@ namespace quick_screen_recorder
 
             tf.compat.v1.disable_eager_execution();
 
+            //var tfSession = tf.Session();
+
             detectorGraph = tf.Graph().as_default();
+            
             detectorGraph.Import(Path.Combine(modelDir, pbDetectorFile));
 
             emotionGraph = tf.Graph().as_default();
@@ -206,6 +211,9 @@ namespace quick_screen_recorder
         {
             stopThread.Set();
             screenThread.Join();
+
+            detectorGraph.Dispose();
+            emotionGraph.Dispose();
 
             if (waveFile != null)
             {
@@ -276,11 +284,11 @@ namespace quick_screen_recorder
 
                 //videoWriteTask = videoStream.WriteFrameAsync(true, buffer, 0, buffer.Length);
 
-                //timeTillNextFrame = TimeSpan.FromSeconds(shotsTaken / (double)writer.FramesPerSecond - stopwatch.Elapsed.TotalSeconds);
-                //if (timeTillNextFrame < TimeSpan.Zero)
-                //{
-                //    timeTillNextFrame = TimeSpan.Zero;
-                //}
+                timeTillNextFrame = TimeSpan.FromSeconds(shotsTaken / (double)writer.FramesPerSecond - stopwatch.Elapsed.TotalSeconds);
+                if (timeTillNextFrame < TimeSpan.Zero)
+                {
+                    timeTillNextFrame = TimeSpan.Zero;
+                }
 
                 isFirstFrame = false;
             }
@@ -304,7 +312,13 @@ namespace quick_screen_recorder
         private NDArray InferenceDetector(NDArray img_buffer_)
         {
             var imgArr = ReadTensorFromImageFile(img_buffer_);
-            using (var sess = tf.Session(detectorGraph))
+            ConfigProto config = new ConfigProto();
+            GPUOptions gpuConfig = new GPUOptions();
+            gpuConfig.AllowGrowth = true;
+            gpuConfig.PerProcessGpuMemoryFraction = 0.3;
+            config.GpuOptions = gpuConfig;
+
+            using (var sess = tf.Session(detectorGraph, config))
             {
                 Tensor tensorClasses = detectorGraph.OperationByName("Identity");
                 Tensor imgTensor = detectorGraph.OperationByName("x");
@@ -342,7 +356,13 @@ namespace quick_screen_recorder
         private void InferenceEmotion(int shotsTaken, NDArray img_buffer_)
         {
             var imgArr = ReadTensorFromDetected(img_buffer_, img_size: 60);
-            using (var sess = tf.Session(emotionGraph))
+            ConfigProto config = new ConfigProto();
+            GPUOptions gpuConfig = new GPUOptions();
+            gpuConfig.AllowGrowth = true;
+            gpuConfig.PerProcessGpuMemoryFraction = 0.3;
+            config.GpuOptions = gpuConfig;
+
+            using (var sess = tf.Session(emotionGraph, config))
             {
                 Tensor tensorClasses = emotionGraph.OperationByName("Identity");
                 Tensor imgTensor = emotionGraph.OperationByName("x");
@@ -358,11 +378,11 @@ namespace quick_screen_recorder
                 //csv.WriteRecord(new { Frame = shotsTaken, Results = results[0] });
                 //csv.Flush();
                 var record = new CSVRecord();
-                record.Neutral = (int)(emotions[0] * 100);
-                record.Happy = (int)(emotions[1] * 100);
-                record.Sad = (int)(emotions[2] * 100);
-                record.Angry = (int)(emotions[3] * 100);
-                record.Surprised = (int)(emotions[4] * 100);
+                record.Neutral = (int)(Math.Round(emotions[0], 2) * 100);
+                record.Happy = (int)(Math.Round(emotions[1], 2) * 100);
+                record.Sad = (int)(Math.Round(emotions[2], 2) * 100);
+                record.Angry = (int)(Math.Round(emotions[3], 2) * 100);
+                record.Surprised = (int)(Math.Round(emotions[4], 2) * 100);
                 record.Date = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
 
                 using (var stream = File.Open("output.csv", FileMode.Append))
@@ -451,8 +471,11 @@ namespace quick_screen_recorder
         private NDArray ReadTensorFromImageFile(NDArray img_buffer_, int img_size = 640)
         {
             var graph = tf.Graph().as_default();
-
-            
+            ConfigProto config = new ConfigProto();
+            GPUOptions gpuConfig = new GPUOptions();
+            gpuConfig.AllowGrowth = true;
+            gpuConfig.PerProcessGpuMemoryFraction = 0.3;
+            config.GpuOptions = gpuConfig;
 
             var t3 = tf.constant(img_buffer_, dtype: TF_DataType.TF_UINT8);
             //var inp = tf.reshape(t3, (height, width, 3));
@@ -460,14 +483,18 @@ namespace quick_screen_recorder
             var dims_expander = tf.expand_dims(casted, 0);
             var resize = tf.constant(new int[] { img_size, img_size });
             var bilinear = tf.image.resize_bilinear(dims_expander, resize);
-            using (var sess = tf.Session(graph))
+            using (var sess = tf.Session(graph, config))
                 return sess.run(bilinear);   
         }
 
         private NDArray ReadTensorFromDetected(NDArray img_buffer_, int img_size = 60)
         {
             var graph = tf.Graph().as_default();
-            
+            ConfigProto config = new ConfigProto();
+            GPUOptions gpuConfig = new GPUOptions();
+            gpuConfig.AllowGrowth = true;
+            gpuConfig.PerProcessGpuMemoryFraction = 0.3;
+            config.GpuOptions = gpuConfig;
 
             var t3 = tf.constant(img_buffer_, dtype: TF_DataType.TF_UINT8);
             //var inp = tf.reshape(t3, (height, width, 3));
@@ -475,7 +502,7 @@ namespace quick_screen_recorder
             var dims_expander = tf.expand_dims(casted, 0);
             var resize = tf.constant(new int[] { img_size, img_size });
             var bilinear = tf.image.resize_bilinear(dims_expander, resize);
-            using (var sess = tf.Session(graph))
+            using (var sess = tf.Session(graph, config))
                 return sess.run(bilinear);
         }
 
