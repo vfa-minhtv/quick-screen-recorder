@@ -45,9 +45,6 @@
       <HintPath>..\packages\Octokit.0.3.4\lib\net45\Octokit.dll</HintPath>
     </Reference>
     <Reference Include="PresentationFramework" />
-    <Reference Include="QuickLibrary">
-      <HintPath>..\..\QuickLibrary\QuickLibrary\bin\Release\QuickLibrary.dll</HintPath>
-    </Reference>
     <Reference Include="SharpAvi, Version=2.1.2.0, Culture=neutral, processorArchitecture=MSIL">
       <HintPath>..\packages\SharpAvi.2.1.2\lib\net45\SharpAvi.dll</HintPath>
     </Reference>
@@ -147,16 +144,22 @@
     <Content Include="rec.ico" />
     <None Include="resources\imgs\light\white-speaker.png" />
     <None Include="resources\imgs\light\white-mixer.png" />
-    <None Include="resources\imgs\light\white-preview.png" />
-    <None Include="resources\imgs\light\white-settings.png" />
-    <None Include="resources\imgs\light\white-ontop.png" />
-    <None Include="resources\imgs\light\white-refresh.png" />
-    <None Include="resources\imgs\light\white-stop.png" />
-    <None Include="resources\imgs\light\white-record.png" />
-    <None Include="resources\imgs\light\white-about.png" />
-    <None Include="resources\white-stop.png" />
-    <None Include="resources\white-record.png" />
-    <None Include="resources\white-about.png" />
+      <None Include="resources\imgs\light\white-preview.png"/>
+      <None Include="resources\imgs\light\white-settings.png"/>
+      <None Include="resources\imgs\light\white-ontop.png"/>
+      <None Include="resources\imgs\light\white-refresh.png"/>
+      <None Include="resources\imgs\light\white-stop.png"/>
+      <None Include="resources\imgs\light\white-record.png"/>
+      <None Include="resources\imgs\light\white-about.png"/>
+      <None Include="resources\white-stop.png"/>
+      <None Include="resources\white-record.png"/>
+      <None Include="resources\white-about.png"/>
   </ItemGroup>
-  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+    <ItemGroup>
+        <ProjectReference Include="..\..\quick-library\QuickLibrary\QuickLibrary.csproj">
+            <Project>{90f913b5-1b48-4e7b-83aa-21c0946b4f81}</Project>
+            <Name>QuickLibrary</Name>
+        </ProjectReference>
+    </ItemGroup>
+    <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets"/>
 </Project>
